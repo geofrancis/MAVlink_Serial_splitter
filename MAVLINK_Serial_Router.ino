@@ -12,7 +12,7 @@ SerialPIO Serial6(10, 11);
 
 
 void setup() {
-  Serial.begin(115200);    // USB
+  // Serial.begin(115200);    // DISABLE USB SERVICE ITS VERY SLOW
   Serial1.begin(1500000);  // 0,1
   Serial2.begin(115200);   // 8,9
   Serial3.begin(115200);
