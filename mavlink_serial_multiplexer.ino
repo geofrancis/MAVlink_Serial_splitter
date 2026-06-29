@@ -1,96 +1,99 @@
+#include "mavlink/common/mavlink.h"
 
-// Use all serial ports on the Pico
-#include "mavlink/common/mavlink.h"  // Mavlink interface
+unsigned long previousMillis = 0;
+const long interval = 1000;
 
-unsigned long previousMillis = 0;  // will store last time LED was updated
-const long interval = 1000;        // interval at which to blink (milliseconds)
-
-SerialPIO Serial3(2, 3);
-SerialPIO Serial4(4, 5);
-SerialPIO Serial5(6, 7);
+SerialPIO ESC1(2, 3);
+SerialPIO ESC2(4, 5);
+SerialPIO ESC3(6, 7);
 SerialPIO Serial6(10, 11);
 
-void setup() {
-   // Serial.begin(115200);    // DISABLE USB SERVICE ITS VERY SLOW
-  Serial1.begin(1500000);  // 0,1
-  Serial2.begin(115200);   // 8,9
-  Serial3.begin(115200);
-  Serial4.begin(115200);
-  Serial5.begin(115200);
-  Serial6.begin(115200);
-}
+// We remove Serial2 from the general inputs array so it can be handled separately
+Stream* generalInputs[] = { &Serial6, &ESC1, &ESC2, &ESC3 };
+const int numGeneralInputs = sizeof(generalInputs) / sizeof(generalInputs[0]);
 
+const size_t BUFFER_SIZE = 128;
+
+void setup() {
+  Serial1.begin(460800);  // Connected to primary MAVLink device
+  Serial2.begin(460800);  // Connected to secondary MAVLink device
+
+  ESC1.begin(460800);
+  ESC2.begin(460800);
+  ESC3.begin(460800);
+  Serial6.begin(460800);
+}
 
 void loop() {
-
-  MAVLINK_HB();
-  IN();
   OUT();
+  MAVLINK_HB(); // Heartbeat still goes out to Serial1
 }
 
+void loop1() {
+  IN();
+}
 
-
+// Handles data coming INTO the system
 void IN() {
+  uint8_t buffer[BUFFER_SIZE];
 
-  if (Serial2.available()) {
-    Serial1.write(Serial2.read());
-    Serial1.flush();
+  // 1. Bidirectional: Forward anything from Serial2 straight to Serial1
+  int serial2Available = Serial2.available();
+  if (serial2Available > 0) {
+    size_t bytesToRead = (serial2Available > BUFFER_SIZE) ? BUFFER_SIZE : serial2Available;
+    Serial2.readBytes(buffer, bytesToRead);
+    Serial1.write(buffer, bytesToRead);
   }
 
-  if (Serial3.available()) {
-    Serial1.write(Serial3.read());
-    Serial1.flush();
-  }
-
-
-  if (Serial4.available()) {
-    Serial1.write(Serial4.read());
-    Serial1.flush();
-  }
-
-  if (Serial5.available()) {
-    Serial1.write(Serial5.read());
-    Serial1.flush();
-  }
-
-  if (Serial6.available()) {
-    Serial1.write(Serial6.read());
-    Serial1.flush();
+  // 2. Forward data from general peripherals (ESCs, etc.) to Serial1
+  for (int i = 0; i < numGeneralInputs; i++) {
+    int availableBytes = generalInputs[i]->available();
+    if (availableBytes > 0) {
+      size_t bytesToRead = (availableBytes > BUFFER_SIZE) ? BUFFER_SIZE : availableBytes;
+      generalInputs[i]->readBytes(buffer, bytesToRead);
+      Serial1.write(buffer, bytesToRead);
+    }
   }
 }
 
-
+// Handles data going OUT of the system from Serial1
 void OUT() {
-  if (Serial1.available()) {
-    Serial3.write(Serial1.read());
+  uint8_t buffer[BUFFER_SIZE];
+  int availableBytes = Serial1.available();
+
+  if (availableBytes > 0) {
+    size_t bytesToRead = (availableBytes > BUFFER_SIZE) ? BUFFER_SIZE : availableBytes;
+    Serial1.readBytes(buffer, bytesToRead);
+
+    // 1. Bidirectional: Forward everything from Serial1 straight to Serial2
+    Serial2.write(buffer, bytesToRead);
+
+    // 2. Broadcast the same data to the rest of the peripherals
+    ESC1.write(buffer, bytesToRead);
+    ESC2.write(buffer, bytesToRead);
+    ESC3.write(buffer, bytesToRead);
+    Serial6.write(buffer, bytesToRead);
   }
 }
-
-
-
-
 
 void MAVLINK_HB() {
-
-
   unsigned long currentMillis = millis();
   if (currentMillis - previousMillis >= interval) {
     previousMillis = currentMillis;
 
-
-    uint16_t len;
-    uint8_t autopilot_type = MAV_TYPE_ONBOARD_CONTROLLER;
-    uint8_t system_mode = MAV_MODE_PREFLIGHT;  ///< Booting up
-    uint32_t custom_mode = 0;                  ///< Custom mode, can be defined by user/adopter
-    uint8_t system_state = 0;                  ///< System ready for flight
+    uint8_t autopilot_type = MAV_AUTOPILOT_INVALID;
+    uint8_t system_mode = MAV_MODE_PREFLIGHT;  
+    uint32_t custom_mode = 2;                  
+    uint8_t system_state = 0;                  
+    int type = MAV_TYPE_ONBOARD_CONTROLLER;
+    
     mavlink_message_t msg;
     uint8_t buf[MAVLINK_MAX_PACKET_LEN];
-    int type = MAV_TYPE_ONBOARD_CONTROLLER;
-    // Pack the message
 
     mavlink_msg_heartbeat_pack(1, 241, &msg, type, autopilot_type, system_mode, custom_mode, system_state);
-    len = mavlink_msg_to_send_buffer(buf, &msg);
+    uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
+    
+    // Sends the heartbeat packet to Serial1
     Serial1.write(buf, len);
-    Serial.println("HB");
   }
 }
